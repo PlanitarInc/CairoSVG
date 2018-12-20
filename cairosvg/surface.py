@@ -117,9 +117,9 @@ class Surface(object):
 
         Specify the input by passing one of these:
 
-        :param bytestring: The SVG source as a byte-string.
-        :param file_obj: A file-like object.
-        :param url: A filename.
+        :param bytestring: The SVG source as a byte-string or list.
+        :param file_obj: A file-like object or list.
+        :param url: A filename or list.
 
         Give some options:
 
@@ -139,14 +139,39 @@ class Surface(object):
         parameters are keyword-only.
 
         """
-        tree = Tree(
-            bytestring=bytestring, file_obj=file_obj, url=url, unsafe=unsafe,
-            **kwargs)
+        trees = []
+        if bytestring is not None:
+            bss = bytestring if isinstance(bytestring, list) else [bytestring]
+            for item in bss:
+                trees.append(Tree(bytestring=item, unsafe=unsafe,
+                                  **kwargs))
+
+        if file_obj is not None:
+            file_objs = file_obj if isinstance(file_obj, list) else [file_obj]
+            for item in file_objs:
+                trees.append(Tree(file_obj=item, unsafe=unsafe, **kwargs))
+
+        if url is not None:
+            urls = url if isinstance(url, list) else [url]
+            for item in urls:
+                trees.append(Tree(url=item, unsafe=unsafe, **kwargs))
+
+        if not trees:
+            raise TypeError
+
         output = write_to or io.BytesIO()
-        instance = cls(
-            tree, output, dpi, None, parent_width, parent_height, scale,
-            output_width, output_height)
-        instance.finish()
+
+        instance = None
+        for tree in trees:
+            if instance is None:
+                instance = cls(tree, output, dpi, None, parent_width,
+                               parent_height, scale)
+            else:
+                instance.addPage(tree, parent_width, parent_height, scale)
+
+        if instance is not None:
+            instance.finish()
+
         if write_to is None:
             return output.getvalue()
 
@@ -219,6 +244,10 @@ class Surface(object):
                 width, height, viewbox, scale, preserved_ratio(tree))
         self.context.move_to(0, 0)
         self.draw(tree)
+
+    def addPage(self, tree, parent_width=None, parent_height=None, scale=1):
+        raise NotImplementedError("Multiple pages are not supported for this "
+                                  "format yet")
 
     @property
     def points_per_pixel(self):
@@ -485,6 +514,31 @@ class Surface(object):
 class PDFSurface(Surface):
     """A surface that writes in PDF format."""
     surface_class = cairo.PDFSurface
+
+    def addPage(self, tree, parent_width=None, parent_height=None, scale=1):
+        self.context_width, self.context_height = parent_width, parent_height
+        self.cursor_position = [0, 0]
+        self.cursor_d_position = [0, 0]
+        self.text_path_width = 0
+        self.tree_cache = {(tree.url, tree.get('id')): tree}
+        self.markers = {}
+        self.gradients = {}
+        self.patterns = {}
+        self.masks = {}
+        self.paths = {}
+        self.filters = {}
+
+        self.context.save()
+        width, height, viewbox = node_format(self, tree)
+        width *= scale
+        height *= scale
+        self.cairo.show_page()
+        self.set_context_size(width, height, viewbox, scale,
+                              preserved_ratio(tree))
+        self.cairo.set_size(width * self.device_units_per_user_units,
+                            height * self.device_units_per_user_units)
+        self.draw(tree)
+        self.context.restore()
 
 
 class PSSurface(Surface):
